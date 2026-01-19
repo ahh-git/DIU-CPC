@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import re
-import time
+import json
+import os
 from streamlit_option_menu import option_menu
 
 # --- PAGE CONFIGURATION ---
@@ -12,14 +13,30 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- SESSION STATE MANAGEMENT ---
-# We use session state to simulate a database for this example.
+# --- FILE STORAGE SYSTEM (PERSISTENCE) ---
+DB_FILE = "users.json"
+
+def load_data():
+    """Load users from the JSON file."""
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+def save_data(data):
+    """Save users to the JSON file."""
+    with open(DB_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+# --- SESSION STATE INITIALIZATION ---
 if 'users' not in st.session_state:
-    st.session_state['users'] = {}  # {email: {'password': pw, 'name': name, 'id': id, 'payment_status': 'Pending', 'trx_id': '', 'bio': '', 'pfp': None}}
+    st.session_state['users'] = load_data()  # Load from file on startup
+
 if 'logged_in_user' not in st.session_state:
     st.session_state['logged_in_user'] = None
-if 'registrations' not in st.session_state:
-    st.session_state['registrations'] = []
 
 # --- CONSTANTS ---
 ADMIN_PASSWORD = "891011"
@@ -30,11 +47,17 @@ def validate_email(email):
     return email.endswith("@diu.edu.bd")
 
 def validate_student_id(student_id):
-    # Format: xxx-xx-xxx (e.g., 221-15-123)
+    # Format: xxx-xx-xxx
     pattern = r"^\d{3}-\d{2}-\d{3,4}$"
     return re.match(pattern, student_id)
 
 def login_user(email, password):
+    email = email.strip().lower() # Remove spaces & make lowercase
+    password = password.strip()
+    
+    # Reload data to ensure we have the latest registrations
+    st.session_state['users'] = load_data()
+    
     if email in st.session_state['users']:
         if st.session_state['users'][email]['password'] == password:
             st.session_state['logged_in_user'] = email
@@ -42,8 +65,16 @@ def login_user(email, password):
     return False
 
 def register_user(email, password, name):
+    email = email.strip().lower() # Remove spaces & make lowercase
+    password = password.strip()
+    name = name.strip()
+    
+    # Reload data first
+    st.session_state['users'] = load_data()
+    
     if email in st.session_state['users']:
         return False
+        
     st.session_state['users'][email] = {
         'password': password,
         'name': name,
@@ -51,20 +82,26 @@ def register_user(email, password, name):
         'payment_status': 'Not Registered',
         'trx_id': None,
         'bio': 'Coding enthusiast ready to win!',
-        'pfp': None
+        'pfp': None # Note: Images cannot be saved to JSON easily, bio will save.
     }
+    save_data(st.session_state['users']) # Save to file immediately
     return True
+
+def update_user_data(email, key, value):
+    st.session_state['users'][email][key] = value
+    save_data(st.session_state['users']) # Save changes
 
 # --- MAIN APP LOGIC ---
 
-# 1. SIDEBAR NAVIGATION (Hidden logic for Admin)
+# 1. SIDEBAR NAVIGATION
 with st.sidebar:
     st.title("Navigation")
-    # Secret Admin Access: Using a checkbox to simulate 'double tap' or hidden toggle
     admin_access = st.checkbox("Admin Mode (Restricted)", value=False)
     
     if st.session_state['logged_in_user']:
-        st.write(f"Logged in as: **{st.session_state['users'][st.session_state['logged_in_user']]['name']}**")
+        curr_user = st.session_state['users'].get(st.session_state['logged_in_user'])
+        if curr_user:
+            st.write(f"Logged in as: **{curr_user['name']}**")
         if st.button("Logout"):
             st.session_state['logged_in_user'] = None
             st.rerun()
@@ -78,10 +115,12 @@ if admin_access:
         st.success("Access Granted")
         st.subheader("Registered Participants Data")
         
-        # Convert session state data to DataFrame for display
+        # Reload latest data
+        all_users = load_data()
+        
         data = []
-        for email, info in st.session_state['users'].items():
-            if info['payment_status'] != 'Not Registered':
+        for email, info in all_users.items():
+            if info.get('payment_status') != 'Not Registered':
                 data.append({
                     "Name": info['name'],
                     "Student ID": info['id'],
@@ -92,32 +131,34 @@ if admin_access:
         
         if data:
             df = pd.DataFrame(data)
-            edited_df = st.data_editor(df, num_rows="dynamic", key="admin_editor")
+            st.dataframe(df) # Display data
             
-            # Button to approve payments (Simulated logic)
-            st.info("To approve a user, manually note their ID. (In a real DB, you'd click a button row-wise)")
+            st.write("### Approve Payment")
+            pending_users = [d['Email'] for d in data if d['Status'] == 'Pending']
             
-            participant_to_approve = st.selectbox("Select Participant to Approve", [d['Email'] for d in data if d['Status'] == 'Pending'])
-            if st.button("Approve Payment"):
-                st.session_state['users'][participant_to_approve]['payment_status'] = "Approved"
-                st.success(f"Approved {participant_to_approve}!")
-                st.rerun()
+            if pending_users:
+                user_to_approve = st.selectbox("Select User to Approve", pending_users)
+                if st.button("Approve Selected User"):
+                    all_users[user_to_approve]['payment_status'] = "Approved"
+                    save_data(all_users) # Save to file
+                    st.session_state['users'] = all_users # Update session
+                    st.success(f"Approved {user_to_approve}!")
+                    st.rerun()
+            else:
+                st.info("No pending approvals.")
         else:
             st.write("No registrations yet.")
             
     elif password_input:
         st.error("Wrong Password")
     
-    st.stop() # Stop further execution if in Admin mode
+    st.stop()
 
 # 3. PUBLIC INTERFACE
-# Header & Info
 st.markdown("<h1 style='text-align: center; color: #4CAF50;'>🏆 CPC Club Contest Spring 2026</h1>", unsafe_allow_html=True)
 st.markdown("---")
 
-# Event Info Section
 col1, col2 = st.columns(2)
-
 with col1:
     st.subheader("🎉 Prize Pool")
     st.markdown("""
@@ -126,7 +167,6 @@ with col1:
     * 🥉 **3rd Place:** BDT 1,000
     * 🏅 **Top 20:** Exclusive Certificates
     """)
-
 with col2:
     st.subheader("🎁 All Participants Get")
     st.markdown("""
@@ -134,10 +174,9 @@ with col2:
     * 🍱 **Free Lunch**
     * 🎁 **Surprise Gift**
     """)
-
 st.markdown("---")
 
-# 4. AUTHENTICATION & REGISTRATION
+# 4. AUTHENTICATION
 if st.session_state['logged_in_user'] is None:
     tab1, tab2 = st.tabs(["Login", "Sign Up"])
     
@@ -156,26 +195,26 @@ if st.session_state['logged_in_user'] is None:
         st.subheader("Sign Up")
         st.info("Only @diu.edu.bd emails are allowed.")
         signup_name = st.text_input("Full Name")
-        signup_email = st.text_input("DIU Email (ends with @diu.edu.bd)", key="signup_email")
+        signup_email = st.text_input("DIU Email", key="signup_email")
         signup_pass = st.text_input("Password", type="password", key="signup_pass")
         
         if st.button("Create Account"):
-            if not validate_email(signup_email):
+            if not validate_email(signup_email.strip()):
                 st.error("Email must end with @diu.edu.bd")
             elif not signup_name or not signup_pass:
                 st.warning("Please fill all fields")
             else:
                 if register_user(signup_email, signup_pass, signup_name):
-                    st.success("Account created! Please login.")
+                    st.success("Account created! Go to Login tab.")
                 else:
                     st.error("User already exists.")
 
 else:
     # 5. LOGGED IN USER VIEW
     user_email = st.session_state['logged_in_user']
+    # Always read fresh from session state which is synced with file
     user_data = st.session_state['users'][user_email]
     
-    # Navigation Menu
     selected = option_menu(
         menu_title=None,
         options=["Registration", "My Profile", "Status"],
@@ -183,7 +222,6 @@ else:
         orientation="horizontal",
     )
     
-    # -- Registration Section --
     if selected == "Registration":
         st.header(f"Welcome, {user_data['name']}!")
         
@@ -192,73 +230,42 @@ else:
         elif user_data['payment_status'] == 'Pending':
             st.warning("⏳ Your payment is pending Admin approval.")
         else:
-            st.write("Please complete the form below to register for the contest.")
-            
             with st.form("reg_form"):
-                st.write("### Step 1: Student Details")
-                # Auto-fill name
+                st.write("### Complete Registration")
                 st.text_input("Name", value=user_data['name'], disabled=True)
                 student_id = st.text_input("Student ID (Format: xxx-xx-xxx)", placeholder="e.g., 221-15-1234")
-                
-                st.write("### Step 2: Payment")
-                st.write(f"Please Send Payment to bKash Personal: **{BKASH_NUMBER}**")
+                st.write(f"Payment Number (bKash): **{BKASH_NUMBER}**")
                 trx_id = st.text_input("Enter bKash Transaction ID")
                 
-                submitted = st.form_submit_button("Complete Payment")
-                
-                if submitted:
+                if st.form_submit_button("Complete Payment"):
                     if not validate_student_id(student_id):
-                        st.error("Invalid Student ID format. Use xxx-xx-xxx.")
+                        st.error("Invalid ID format.")
                     elif not trx_id:
-                        st.error("Please enter Transaction ID.")
+                        st.error("Enter Transaction ID.")
                     else:
-                        # Update User Data
-                        st.session_state['users'][user_email]['id'] = student_id
-                        st.session_state['users'][user_email]['trx_id'] = trx_id
-                        st.session_state['users'][user_email]['payment_status'] = "Pending"
-                        st.success("Registration Submitted! Waiting for Admin Approval.")
+                        update_user_data(user_email, 'id', student_id)
+                        update_user_data(user_email, 'trx_id', trx_id)
+                        update_user_data(user_email, 'payment_status', "Pending")
+                        st.success("Submitted! Waiting for Admin.")
                         st.rerun()
 
-    # -- Profile Section --
     elif selected == "My Profile":
         st.header("My Profile")
+        st.write(f"**Name:** {user_data['name']}")
+        st.write(f"**Email:** {user_email}")
         
-        col_p1, col_p2 = st.columns([1, 3])
-        
-        with col_p1:
-            if user_data.get('pfp'):
-                st.image(user_data['pfp'], width=150, caption="Profile Picture")
-            else:
-                st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=150)
-            
-            uploaded_file = st.file_uploader("Update PFP", type=['png', 'jpg', 'jpeg'])
-            if uploaded_file is not None:
-                st.session_state['users'][user_email]['pfp'] = uploaded_file
-                st.rerun()
+        new_bio = st.text_area("Bio", value=user_data.get('bio', ''))
+        if st.button("Update Bio"):
+            update_user_data(user_email, 'bio', new_bio)
+            st.success("Bio updated!")
 
-        with col_p2:
-            st.subheader(user_data['name'])
-            st.write(f"**Email:** {user_email}")
-            st.write(f"**Student ID:** {user_data['id'] if user_data['id'] else 'Not set'}")
-            
-            new_bio = st.text_area("Bio", value=user_data.get('bio', ''))
-            if st.button("Update Bio"):
-                st.session_state['users'][user_email]['bio'] = new_bio
-                st.success("Bio updated!")
-
-    # -- Status Section --
     elif selected == "Status":
-        st.header("Participation Status")
+        st.header("Status")
         status = user_data['payment_status']
-        
         if status == "Approved":
-            st.success("🎉 CONGRATULATIONS! You are officially a participant.")
             st.balloons()
-            st.metric(label="Contest Date", value="Spring 2026")
-            st.info("Don't forget to collect your Jersey and Lunch token at the venue!")
+            st.success("You are CONFIRMED for the contest!")
         elif status == "Pending":
-            st.warning("Your payment is currently under review by the Admin.")
-            st.write(f"**Transaction ID Submitted:** {user_data['trx_id']}")
+            st.warning("Admin is reviewing your payment.")
         else:
-            st.error("You have not registered yet.")
-            st.write("Go to the **Registration** tab to join.")
+            st.error("Not registered.")
